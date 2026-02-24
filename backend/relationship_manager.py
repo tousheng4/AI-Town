@@ -1,5 +1,7 @@
 """NPC好感度管理系统 - 使用LangChain框架"""
 
+import os
+from pathlib import Path
 from typing import Dict, Optional, Tuple, Any
 import json
 import re
@@ -47,12 +49,37 @@ class RelationshipManager:
         # 存储每个NPC与玩家的好感度
         self.affinity_scores: Dict[str, Dict[str, float]] = {}
 
+        # 好感度持久化文件
+        self.affinity_file = Path(__file__).parent / "affinity_data.json"
+        self._load_affinity()
+
         # 创建好感度分析 LCEL Chain
         self.analyzer_chain = None
         if ChatPromptTemplate:
             self.analyzer_chain = self._create_analyzer_chain()
 
         print("💖 好感度管理系统已初始化 (LangChain)")
+
+    def _load_affinity(self):
+        """从文件加载好感度数据"""
+        if self.affinity_file.exists():
+            try:
+                with open(self.affinity_file, "r", encoding="utf-8") as f:
+                    self.affinity_scores = json.load(f)
+                print(f"  💾 已加载好感度数据: {len(self.affinity_scores)} 个NPC")
+            except Exception as e:
+                print(f"  ⚠️ 加载好感度数据失败: {e}")
+                self.affinity_scores = {}
+        else:
+            print("  📄 好感度数据文件不存在，将创建新文件")
+
+    def _save_affinity(self):
+        """保存好感度到文件"""
+        try:
+            with open(self.affinity_file, "w", encoding="utf-8") as f:
+                json.dump(self.affinity_scores, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"  ⚠️ 保存好感度数据失败: {e}")
 
     def _create_analyzer_chain(self) -> Any:
         """创建好感度分析 LCEL Chain"""
@@ -144,6 +171,7 @@ NPC: "当然可以!我很乐意分享。"
 
         affinity = max(0.0, min(100.0, affinity))
         self.affinity_scores[npc_name][player_id] = affinity
+        self._save_affinity()
 
     def analyze_and_update_affinity(
         self,
