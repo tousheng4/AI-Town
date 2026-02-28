@@ -13,7 +13,7 @@ class Settings:
     API_PORT = 8000
     
     # NPC配置
-    NPC_UPDATE_INTERVAL = 30  # NPC状态更新间隔(秒)
+    NPC_UPDATE_INTERVAL = 120  # NPC状态更新间隔(秒)
 
     # LLM配置 (从环境变量读取)
     LLM_MODEL_ID: str = os.getenv("LLM_MODEL_ID", "glm-4")
@@ -26,6 +26,14 @@ class Settings:
 
     # CORS配置
     CORS_ORIGINS = ["*"]  # 生产环境应限制具体域名
+
+    # Redis 配置
+    REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
+    REDIS_PASSWORD: Optional[str] = os.getenv("REDIS_PASSWORD")
+    REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
+    # 短期记忆过期时间（秒），默认2小时
+    MEMORY_TTL: int = int(os.getenv("MEMORY_TTL", "7200"))
 
     @classmethod
     def validate(cls):

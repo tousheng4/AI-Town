@@ -5,17 +5,18 @@ import json
 import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from relationship_manager import RelationshipManager
+from relationship import RelationshipManager
 from logger import (
     log_dialogue_start, log_affinity, log_memory_retrieval,
     log_generating_response, log_npc_response, log_analyzing_affinity,
     log_affinity_change, log_memory_saved, log_dialogue_end, log_info
 )
 from config import settings
+from memory import get_history, extend_ttl, save_message
+from memory import clear_memory as clear_short_term_memory
 
 # LangChain 核心导入 - 延迟导入以处理缺失包
 HuggingFaceEmbeddings = None
-ConversationBufferMemory = None
 Qdrant = None
 ChatOpenAI = None
 QdrantVectorStore = None
@@ -31,7 +32,7 @@ Document = None
 
 # 尝试导入 LangChain 模块
 def _import_langchain():
-    global HuggingFaceEmbeddings, ConversationBufferMemory, Qdrant, ChatOpenAI
+    global HuggingFaceEmbeddings, Qdrant, ChatOpenAI
     global Runnable, HumanMessage, AIMessage, SystemMessage, MessagesPlaceholder
     global ChatPromptTemplate, Document, QdrantVectorStore
 
@@ -47,11 +48,6 @@ def _import_langchain():
         from langchain_openai import ChatOpenAI
     except ImportError as e:
         print(f"⚠️ langchain_openai 导入失败: {e}")
-
-    try:
-        from langchain_classic.memory import ConversationBufferMemory
-    except ImportError as e:
-        print(f"⚠️ langchain_classic.memory 导入失败: {e}")
 
     try:
         from langchain_qdrant import QdrantVectorStore
@@ -192,9 +188,6 @@ class NPCAgentManager:
         # NPC Agents (使用 LCEL Runnable)
         self.agents: Dict[str, Any] = {}
 
-        # 工作记忆 (短期)
-        self.working_memories: Dict[str, Any] = {}
-
         # 情景记忆 (长期) - 使用 Qdrant 向量数据库
         self.episodic_memories: Dict[str, Any] = {}
 
@@ -221,22 +214,6 @@ class NPCAgentManager:
                     # 创建 LCEL Agent Chain
                     agent = self._create_npc_agent(name, system_prompt)
                     self.agents[name] = agent
-
-                    # 创建工作记忆 (短期)
-                    if ConversationBufferMemory:
-                        try:
-                            working_memory = ConversationBufferMemory(
-                                return_messages=True,
-                                output_key="output",
-                                input_key="input",
-                                max_history=10
-                            )
-                            self.working_memories[name] = working_memory
-                        except Exception as e:
-                            print(f"  ⚠️ {name} 工作记忆创建失败: {e}")
-                            self.working_memories[name] = None
-                    else:
-                        self.working_memories[name] = None
 
                     # 创建情景记忆 (长期) - Qdrant
                     self._create_episodic_memory(name)
@@ -329,7 +306,6 @@ class NPCAgentManager:
             return f"错误: NPC '{npc_name}' 不存在"
 
         agent = self.agents[npc_name]
-        working_memory = self.working_memories.get(npc_name)
         episodic_memory = self.episodic_memories.get(npc_name)
 
         if agent is None:
@@ -360,6 +336,14 @@ class NPCAgentManager:
             relevant_memories = []
             if episodic_memory:
                 try:
+                    # 检查 Qdrant 中的记忆数量
+                    try:
+                        if hasattr(episodic_memory, 'client') and hasattr(episodic_memory.client, 'count'):
+                            total_count = episodic_memory.client.count(collection_name=episodic_memory.collection_name)
+                            print(f"  📚 Qdrant中共有 {total_count} 条记忆")
+                    except Exception as e:
+                        pass  # 静默忽略
+
                     docs = episodic_memory.similarity_search(
                         query=message,
                         k=5
@@ -394,17 +378,14 @@ class NPCAgentManager:
 
             # 准备历史消息
             history_messages = []
-            if working_memory:
-                try:
-                    history = working_memory.chat_memory.messages
-                    for msg in history:
-                        if hasattr(msg, 'type'):
-                            if msg.type == 'human' and HumanMessage:
-                                history_messages.append(HumanMessage(content=msg.content))
-                            elif msg.type == 'ai' and AIMessage:
-                                history_messages.append(AIMessage(content=msg.content))
-                except Exception as e:
-                    print(f"  ⚠️ 获取历史失败: {e}")
+            memory_history=get_history(npc_name,player_id)
+            for msg in memory_history:
+                if msg["role"]=="human" and HumanMessage:
+                    history_messages.append(HumanMessage(content=msg["content"]))
+                elif msg["role"]=="ai" and AIMessage:
+                    history_messages.append(AIMessage(content=msg["content"]))
+            # 每次获取历史后，延长 TTL（保持活跃）
+            extend_ttl(npc_name,player_id)
 
             # 调用 LCEL Agent
             t1 = time.time()
@@ -438,12 +419,11 @@ class NPCAgentManager:
                 affinity_result = {"changed": False, "affinity": 50.0}
 
             # 6. 保存对话到记忆
-            if working_memory:
-                try:
-                    working_memory.chat_memory.add_user_message(message)
-                    working_memory.chat_memory.add_ai_message(npc_response)
-                except Exception as e:
-                    print(f"  ⚠️ 保存工作记忆失败: {e}")
+            try:
+                save_message(npc_name,player_id,"human",message)
+                save_message(npc_name,player_id,"ai",npc_response)
+            except Exception as e:
+                print(f"  ⚠️ 保存工作记忆失败: {e}")
 
             # 保存到情景记忆 (Qdrant)
             if episodic_memory and Document:
@@ -560,13 +540,11 @@ class NPCAgentManager:
     def clear_npc_memory(self, npc_name: str, memory_type: Optional[str] = None):
         """清空NPC的记忆"""
         if memory_type == "working" or memory_type is None:
-            working_memory = self.working_memories.get(npc_name)
-            if working_memory:
-                try:
-                    working_memory.clear()
-                    print(f"✅ 已清空{npc_name}的工作记忆")
-                except Exception as e:
-                    print(f"❌ 清空{npc_name}工作记忆失败: {e}")
+            try:
+                clear_short_term_memory(npc_name)
+                print(f"✅ 已清空{npc_name}的工作记忆")
+            except Exception as e:
+                print(f"❌ 清空{npc_name}工作记忆失败: {e}")
 
         if memory_type == "episodic" or memory_type is None:
             print(f"⚠️ 情景记忆需要手动删除 Qdrant 集合")

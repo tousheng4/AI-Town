@@ -10,6 +10,7 @@ import re
 ChatOpenAI = None
 ChatPromptTemplate = None
 
+
 def _import_langchain():
     global ChatOpenAI, ChatPromptTemplate
 
@@ -22,6 +23,7 @@ def _import_langchain():
         from langchain_core.prompts import ChatPromptTemplate
     except ImportError as e:
         print(f"⚠️ langchain_core.prompts 导入失败: {e}")
+
 
 _import_langchain()
 
@@ -49,8 +51,8 @@ class RelationshipManager:
         # 存储每个NPC与玩家的好感度
         self.affinity_scores: Dict[str, Dict[str, float]] = {}
 
-        # 好感度持久化文件
-        self.affinity_file = Path(__file__).parent / "affinity_data.json"
+        # 好感度持久化文件 (放在 backend 目录下)
+        self.affinity_file = Path(__file__).parent.parent / "affinity_data.json"
         self._load_affinity()
 
         # 创建好感度分析 LCEL Chain
