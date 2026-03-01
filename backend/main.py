@@ -80,7 +80,7 @@ def get_managers():
     if npc_manager is None:
         npc_manager = get_npc_manager()
     if state_manager is None:
-        state_manager = get_state_manager()
+        state_manager = get_state_manager(settings.NPC_UPDATE_INTERVAL)
     return npc_manager, state_manager
 
 

@@ -7,16 +7,16 @@ from datetime import datetime
 @dataclass
 class AgentResult:
     """Agent执行结果"""
-    success:bool
-    data:Any=None
-    error:str=""
+    success: bool
+    data: Any = None
+    error: str = ""
     agent_name: str = ""
     execution_time: float = 0.0
     timestamp: str = ""
 
     def __post_init__(self):
         if not self.timestamp:
-            self.timestamp=datetime.now().isoformat()
+            self.timestamp = datetime.now().isoformat()
 
 class BaseAgent(ABC):
     """Agent抽象基类"""

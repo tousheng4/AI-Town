@@ -17,7 +17,6 @@ from memory import clear_memory as clear_short_term_memory
 
 # LangChain 核心导入 - 延迟导入以处理缺失包
 HuggingFaceEmbeddings = None
-Qdrant = None
 ChatOpenAI = None
 QdrantVectorStore = None
 
@@ -32,7 +31,7 @@ Document = None
 
 # 尝试导入 LangChain 模块
 def _import_langchain():
-    global HuggingFaceEmbeddings, Qdrant, ChatOpenAI
+    global HuggingFaceEmbeddings, ChatOpenAI
     global Runnable, HumanMessage, AIMessage, SystemMessage, MessagesPlaceholder
     global ChatPromptTemplate, Document, QdrantVectorStore
 
@@ -166,8 +165,6 @@ class NPCAgentManager:
                     model_name=settings.EMBED_MODEL_NAME,
                     model_kwargs={'device': 'cpu'}
                 )
-                # 测试embedding是否可用
-                _ = self.embeddings.embed_query("test")
                 print(f"✅ Embedding模型初始化成功 ({settings.EMBED_MODEL_NAME})")
             except Exception as e:
                 error_msg = str(e)
@@ -221,7 +218,6 @@ class NPCAgentManager:
                 else:
                     # 模拟模式
                     self.agents[name] = None
-                    self.working_memories[name] = None
                     self.episodic_memories[name] = None
 
                 print(f"✅ {name}({role['title']}) Agent创建成功 (LangChain + Memory)")
@@ -229,7 +225,6 @@ class NPCAgentManager:
             except Exception as e:
                 print(f"❌ {name} Agent创建失败: {e}")
                 self.agents[name] = None
-                self.working_memories[name] = None
                 self.episodic_memories[name] = None
 
     def _create_npc_agent(self, name: str, system_prompt: str) -> Any:
@@ -257,10 +252,6 @@ class NPCAgentManager:
             collection_name = f"npc_{npc_name}_episodic"
             qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
             qdrant_api_key = os.getenv("QDRANT_API_KEY", "")
-
-            # 测试embedding维度
-            test_emb = self.embeddings.embed_query("test")
-            vector_size = len(test_emb)
 
             if "cloud.qdrant.io" in qdrant_url:
                 try:
@@ -349,16 +340,10 @@ class NPCAgentManager:
                         k=5
                     )
                     for doc in docs:
-                        # 兼容 Document 对象和字典两种格式
-                        if isinstance(doc, dict):
-                            content = doc.get("page_content", doc.get("content", ""))
-                            metadata = doc.get("metadata", {})
-                        else:
-                            content = getattr(doc, "page_content", str(doc))
-                            metadata = getattr(doc, "metadata", {})
+                        parsed = self._parse_document(doc)
                         relevant_memories.append({
-                            "content": content,
-                            "metadata": metadata
+                            "content": parsed["content"],
+                            "metadata": parsed["metadata"]
                         })
                     print(f"  ⏱️ 记忆检索耗时: {time.time()-t0:.2f}秒")
                     log_memory_retrieval(npc_name, len(relevant_memories), relevant_memories)
@@ -463,6 +448,16 @@ class NPCAgentManager:
             traceback.print_exc()
             return f"抱歉,我现在有点忙,等会儿再聊吧。(错误: {str(e)})"
 
+    def _parse_document(self, doc) -> Dict:
+        """解析文档对象，支持 Document 和 dict 两种格式"""
+        if isinstance(doc, dict):
+            content = doc.get("page_content", doc.get("content", ""))
+            metadata = doc.get("metadata", {})
+        else:
+            content = getattr(doc, "page_content", str(doc))
+            metadata = getattr(doc, "metadata", {})
+        return {"content": content, "metadata": metadata}
+
     def _build_memory_context(self, memories: List[Dict]) -> str:
         """构建记忆上下文"""
         if not memories:
@@ -517,15 +512,10 @@ class NPCAgentManager:
 
             memory_list = []
             for doc in docs:
-                # 兼容 Document 对象和字典两种格式
-                if isinstance(doc, dict):
-                    content = doc.get("page_content", doc.get("content", ""))
-                    metadata = doc.get("metadata", {})
-                else:
-                    content = getattr(doc, "page_content", str(doc))
-                    metadata = getattr(doc, "metadata", {})
+                parsed = self._parse_document(doc)
+                metadata = parsed["metadata"]
                 memory_list.append({
-                    "content": content,
+                    "content": parsed["content"],
                     "type": metadata.get("type", "episodic"),
                     "timestamp": metadata.get("timestamp", ""),
                     "metadata": metadata
