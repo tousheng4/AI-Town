@@ -1,7 +1,6 @@
 """赛博小镇 FastAPI 后端主程序"""
 
 from dotenv import load_dotenv
-import os
 
 # 加载 .env 文件
 load_dotenv()
@@ -14,42 +13,44 @@ import asyncio
 
 from config import settings
 from models import (
-    ChatRequest, ChatResponse, 
+    ChatRequest, ChatResponse,
     NPCStatusResponse, NPCListResponse, NPCInfo
 )
 from agents import get_npc_manager
 from state_manager import get_state_manager
+
 
 # 生命周期管理
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("🎮 赛博小镇后端服务启动中...")
-    print("="*60)
-    
+    print("=" * 60)
+
     # 验证配置
     settings.validate()
-    
+
     # 初始化NPC管理器
     npc_manager = get_npc_manager()
-    
+
     # 初始化并启动状态管理器
     state_manager = get_state_manager(settings.NPC_UPDATE_INTERVAL)
     await state_manager.start()
-    
+
     print("\n✅ 所有服务已启动!")
     print(f"📡 API地址: http://{settings.API_HOST}:{settings.API_PORT}")
     print(f"📚 API文档: http://{settings.API_HOST}:{settings.API_PORT}/docs")
-    print("="*60 + "\n")
-    
+    print("=" * 60 + "\n")
+
     yield
-    
+
     # 关闭时
     print("\n🛑 正在关闭服务...")
     await state_manager.stop()
     print("✅ 服务已关闭\n")
+
 
 # 创建FastAPI应用
 app = FastAPI(
@@ -72,6 +73,7 @@ app.add_middleware(
 npc_manager = None
 state_manager = None
 
+
 def get_managers():
     """获取管理器实例"""
     global npc_manager, state_manager
@@ -80,6 +82,7 @@ def get_managers():
     if state_manager is None:
         state_manager = get_state_manager()
     return npc_manager, state_manager
+
 
 # ==================== API路由 ====================
 
@@ -102,19 +105,25 @@ async def root():
         }
     }
 
+
 @app.get("/health")
 async def health_check():
     """健康检查"""
     return {"status": "healthy", "timestamp": "now"}
 
+
 @app.post("/chat", response_model=ChatResponse)
-async def chat_with_npc(request: ChatRequest):
+async def chat_with_npc(request: ChatRequest, use_supervisor: bool = True):
     """与NPC对话接口
-    
+
     玩家与指定NPC进行实时对话,使用独立的Agent处理
+
+    Args:
+        request: 对话请求
+        use_supervisor: 是否使用Multi-Agent Supervisor模式 (可选,默认False)
     """
     npc_mgr, _ = get_managers()
-    
+
     # 验证NPC是否存在
     npc_info = npc_mgr.get_npc_info(request.npc_name)
     if not npc_info:
@@ -122,10 +131,24 @@ async def chat_with_npc(request: ChatRequest):
             status_code=404,
             detail=f"NPC '{request.npc_name}' 不存在"
         )
-    
+
     try:
-        # 调用NPC Agent处理对话 (在线程池中运行避免阻塞)
-        response_text = await asyncio.to_thread(npc_mgr.chat, request.npc_name, request.message)
+        # 根据模式选择使用原始chat或Supervisor模式
+        if use_supervisor:
+            # 使用Multi-Agent Supervisor模式
+            response_text = await npc_mgr.chat_supervisor(
+                request.npc_name,
+                request.message,
+                request.player_id
+            )
+        else:
+            # 使用原始单Agent模式 (在线程池中运行避免阻塞)
+            response_text = await asyncio.to_thread(
+                npc_mgr.chat,
+                request.npc_name,
+                request.message,
+                request.player_id
+            )
 
         return ChatResponse(
             npc_name=request.npc_name,
@@ -133,25 +156,29 @@ async def chat_with_npc(request: ChatRequest):
             message=response_text,
             success=True
         )
-        
+
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail=f"对话处理失败: {str(e)}"
         )
 
+
 @app.get("/npcs", response_model=NPCListResponse)
 async def list_npcs():
     """获取所有NPC列表"""
     npc_mgr, _ = get_managers()
-    
+
     npcs_data = npc_mgr.get_all_npcs()
     npcs = [NPCInfo(**npc) for npc in npcs_data]
-    
+
     return NPCListResponse(
         npcs=npcs,
         total=len(npcs)
     )
+
 
 @app.get("/npcs/status", response_model=NPCStatusResponse)
 async def get_npcs_status():
@@ -160,14 +187,15 @@ async def get_npcs_status():
     返回批量生成的NPC对话内容,用于显示NPC的自主行为
     """
     _, state_mgr = get_managers()
-    
+
     state = state_mgr.get_current_state()
-    
+
     return NPCStatusResponse(
         dialogues=state["dialogues"],
         last_update=state["last_update"],
         next_update_in=state["next_update_in"]
     )
+
 
 @app.post("/npcs/status/refresh")
 async def refresh_npcs_status():
@@ -176,14 +204,15 @@ async def refresh_npcs_status():
     立即触发一次批量对话生成
     """
     _, state_mgr = get_managers()
-    
+
     await state_mgr.force_update()
     state = state_mgr.get_current_state()
-    
+
     return {
         "message": "NPC状态已刷新",
         "dialogues": state["dialogues"]
     }
+
 
 @app.get("/npcs/{npc_name}")
 async def get_npc_info(npc_name: str):
@@ -202,6 +231,7 @@ async def get_npc_info(npc_name: str):
     npc_info["current_dialogue"] = current_dialogue
 
     return npc_info
+
 
 @app.get("/npcs/{npc_name}/memories")
 async def get_npc_memories(npc_name: str, limit: int = 10):
@@ -239,6 +269,7 @@ async def get_npc_memories(npc_name: str, limit: int = 10):
             detail=f"获取记忆失败: {str(e)}"
         )
 
+
 @app.delete("/npcs/{npc_name}/memories")
 async def clear_npc_memories(npc_name: str, memory_type: str = None):
     """清空NPC的记忆 (用于测试)
@@ -274,6 +305,7 @@ async def clear_npc_memories(npc_name: str, memory_type: str = None):
             status_code=500,
             detail=f"清空记忆失败: {str(e)}"
         )
+
 
 @app.get("/npcs/{npc_name}/affinity")
 async def get_npc_affinity(npc_name: str, player_id: str = "player"):
@@ -311,6 +343,7 @@ async def get_npc_affinity(npc_name: str, player_id: str = "player"):
             detail=f"获取好感度失败: {str(e)}"
         )
 
+
 @app.get("/affinities")
 async def get_all_affinities(player_id: str = "player"):
     """获取所有NPC对玩家的好感度
@@ -336,6 +369,7 @@ async def get_all_affinities(player_id: str = "player"):
             status_code=500,
             detail=f"获取好感度失败: {str(e)}"
         )
+
 
 @app.put("/npcs/{npc_name}/affinity")
 async def set_npc_affinity(npc_name: str, affinity: float, player_id: str = "player"):
@@ -383,13 +417,14 @@ async def set_npc_affinity(npc_name: str, affinity: float, player_id: str = "pla
             detail=f"设置好感度失败: {str(e)}"
         )
 
+
 # ==================== 主程序入口 ====================
 
 if __name__ == "__main__":
     print("\n🚀 启动赛博小镇后端服务...")
     print(f"📍 监听地址: {settings.API_HOST}:{settings.API_PORT}")
     print(f"📖 访问文档: http://localhost:{settings.API_PORT}/docs\n")
-    
+
     uvicorn.run(
         "main:app",
         host=settings.API_HOST,
@@ -397,4 +432,3 @@ if __name__ == "__main__":
         reload=False,  # 禁用自动重载
         log_level="info"
     )
-

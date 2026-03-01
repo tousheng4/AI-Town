@@ -116,6 +116,6 @@ def log_error(message: str):
     dialogue_logger.error(message)
 
 # 启动时记录日志文件位置
-print(f"\n📝 对话日志文件: {LOG_FILE}")
-print(f"📂 日志目录: {LOGS_DIR}\n")
+print(f"\n[LOG] Dialogue log file: {LOG_FILE}")
+print(f"[LOG] Log directory: {LOGS_DIR}\n")
 

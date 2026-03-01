@@ -42,22 +42,22 @@ def _import_langchain():
         from langchain_core.runnables import Runnable
         from langchain_core.documents import Document
     except ImportError as e:
-        print(f"⚠️ langchain_core messages/prompts 导入失败: {e}")
+        print(f"[WARNING] langchain_core messages/prompts import failed: {e}")
 
     try:
         from langchain_openai import ChatOpenAI
     except ImportError as e:
-        print(f"⚠️ langchain_openai 导入失败: {e}")
+        print(f"[WARNING] langchain_openai import failed: {e}")
 
     try:
         from langchain_qdrant import QdrantVectorStore
     except ImportError as e:
-        print(f"⚠️ langchain_qdrant 导入失败: {e}")
+        print(f"[WARNING] langchain_qdrant import failed: {e}")
 
     try:
         from langchain_huggingface import HuggingFaceEmbeddings
     except ImportError as e:
-        print(f"⚠️ langchain_huggingface 导入失败: {e}")
+        print(f"[WARNING] langchain_huggingface import failed: {e}")
 
 # 执行延迟导入
 _import_langchain()
@@ -175,15 +175,15 @@ class NPCAgentManager:
                     print(f"⚠️ 无法连接到HuggingFace镜像,Embedding模型初始化失败")
                     print(f"   原因: 网络连接超时,当前镜像: {os.getenv('HF_ENDPOINT', 'https://hf-mirror.com')}")
                 else:
-                    print(f"❌ Embedding模型初始化失败: {e}")
-                print("⚠️ 情景记忆功能将不可用")
+                    print(f"[ERROR] Embedding model init failed: {e}")
+                print("[WARNING] Episodic memory will not be available")
                 self.embeddings = None
         else:
-            print("⚠️ 未安装langchain-huggingface,情景记忆功能将不可用")
+            print("[WARNING] langchain-huggingface not installed, episodic memory will not be available")
 
         # 如果LLM初始化失败，使用模拟模式
         if not self.llm:
-            print("⚠️ 将使用模拟模式运行")
+            print("[WARNING] Will run in simulation mode")
 
         # NPC Agents (使用 LCEL Runnable)
         self.agents: Dict[str, Any] = {}
@@ -584,6 +584,73 @@ class NPCAgentManager:
         self.relationship_manager.set_affinity(npc_name, affinity, player_id)
         level = self.relationship_manager.get_affinity_level(affinity)
         print(f"✅ 已设置{npc_name}对玩家的好感度: {affinity:.1f} ({level})")
+
+    async def chat_supervisor(self, npc_name: str, message: str, player_id: str = "player") -> str:
+        """使用Supervisor模式与NPC对话 (Multi-Agent架构)"""
+        # 导入Multi-Agent组件 (从agent_framework包)
+        from agent_framework import AgentFactory, SupervisorAgent, SupervisorConfig
+        # NPC_ROLES在当前模块中定义
+        global NPC_ROLES
+
+        if npc_name not in self.agents:
+            return f"错误: NPC '{npc_name}' 不存在"
+
+        # 检查是否是模拟模式
+        agent = self.agents.get(npc_name)
+        if agent is None:
+            role = NPC_ROLES.get(npc_name, {})
+            return f"你好!我是{npc_name},一名{role.get('title', '')}。(当前为模拟模式,请配置API_KEY以启用AI对话)"
+
+        try:
+            # 创建Agent工厂
+            factory = AgentFactory(self.llm)
+
+            # 获取NPC配置
+            role_config = NPC_ROLES.get(npc_name, {})
+
+            # 创建各专业Agent
+            memory_agent = factory.create_memory_agent(self.episodic_memories)
+            affinity_agent = factory.create_affinity_agent(self.relationship_manager)
+            dialogue_agent = factory.create_dialogue_agent(npc_name, role_config)
+            reflection_agent = factory.create_reflection_agent(npc_name, role_config)
+
+            # 创建Supervisor配置
+            config = SupervisorConfig(
+                enable_reflection=True,
+                parallel_memory_affinity=True
+            )
+
+            # 创建Supervisor
+            supervisor = factory.create_supervisor(
+                memory_agent=memory_agent,
+                affinity_agent=affinity_agent,
+                dialogue_agent=dialogue_agent,
+                reflection_agent=reflection_agent,
+                config=config
+            )
+
+            # 构建上下文
+            context = {
+                "npc_name": npc_name,
+                "player_id": player_id,
+                "player_message": message,
+                "role_config": role_config,
+                "episodic_memory": self.episodic_memories.get(npc_name)
+            }
+
+            # 执行Supervisor
+            result = await supervisor.execute(context)
+
+            if result.success:
+                return result.data.get("response", "")
+            else:
+                return f"抱歉,我现在有点忙,等会儿再聊吧。(错误: {result.error})"
+
+        except Exception as e:
+            print(f"❌ {npc_name} Supervisor对话失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"抱歉,我现在有点忙,等会儿再聊吧。(错误: {str(e)})"
 
 
 # 全局单例

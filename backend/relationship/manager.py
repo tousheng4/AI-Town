@@ -17,12 +17,12 @@ def _import_langchain():
     try:
         from langchain_openai import ChatOpenAI
     except ImportError as e:
-        print(f"⚠️ langchain_openai 导入失败: {e}")
+        print(f"[WARNING] langchain_openai import failed: {e}")
 
     try:
         from langchain_core.prompts import ChatPromptTemplate
     except ImportError as e:
-        print(f"⚠️ langchain_core.prompts 导入失败: {e}")
+        print(f"[WARNING] langchain_core.prompts import failed: {e}")
 
 
 _import_langchain()

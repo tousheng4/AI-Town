@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Dict, Optional, Any
 
 from agents import NPC_ROLES
+
 from config import settings
 
 # LangChain 导入 - 延迟导入
@@ -18,12 +19,12 @@ def _import_langchain():
     try:
         from langchain_openai import ChatOpenAI
     except ImportError as e:
-        print(f"⚠️ langchain_openai 导入失败: {e}")
+        print(f"⚠️ langchain_openai import failed: {e}")
 
     try:
         from langchain_core.prompts import ChatPromptTemplate
     except ImportError as e:
-        print(f"⚠️ langchain_core.prompts 导入失败: {e}")
+        print(f"⚠️ langchain_core.prompts import failed: {e}")
 
 _import_langchain()
 
