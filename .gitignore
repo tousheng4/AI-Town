@@ -34,3 +34,6 @@ logs/
 
 # JSON Files
 affinity_data.json
+
+#claude
+.claude/

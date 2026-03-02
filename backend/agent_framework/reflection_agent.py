@@ -2,6 +2,7 @@
 import time
 from typing import Dict, Any, Optional
 
+from logger import log_info
 from .base import BaseAgent, AgentResult
 
 # LangChain 延迟导入
@@ -105,17 +106,28 @@ NPC回复: {npc_response}
 
             response_text = getattr(response, "content", str(response)).strip()
 
+            # 记录LLM响应
+            log_info(f"[Reflection] LLM审查响应: {response_text}")
+
             # 解析审查结果
             needs_revision = False
             revised_response = npc_response
 
             if response_text.startswith("REVISED:"):
-                needs_revision = True
-                revised_response = response_text.replace("REVISED:", "").strip()
-            elif response_text != "PASS":
-                # 如果不是PASS，尝试直接使用审查结果作为修改后的回复
-                needs_revision = True
-                revised_response = response_text
+                # 提取修改后的回复
+                revised_text = response_text.replace("REVISED:", "").strip()
+                # 验证是否包含有效内容（不包含审查相关关键词）
+                if revised_text and "审查" not in revised_text and "关系" not in revised_text:
+                    needs_revision = True
+                    revised_response = revised_text
+                else:
+                    log_info(f"[Reflection] 忽略无效的REVISED回复: {revised_text[:50]}...")
+            elif response_text.strip() == "PASS":
+                # 确认不需要修改
+                pass
+            else:
+                # 如果既不是PASS也不是REVISED开头，忽略无效响应
+                log_info(f"[Reflection] 忽略无效的审查响应: {response_text[:50]}...")
 
             execution_time = time.time() - start_time
 

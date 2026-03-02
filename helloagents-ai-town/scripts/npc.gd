@@ -82,8 +82,6 @@ func _ready():
 
 func _on_body_entered(body: Node2D):
 	"""玩家进入交互范围"""
-	print("[DEBUG] NPC ", npc_name, " 检测到物体进入: ", body.name, " 是否在player组: ", body.is_in_group("player"))
-
 	if body.is_in_group("player"):
 		player = body
 		print("[INFO] ✅ 玩家进入NPC范围: ", npc_name)
@@ -98,8 +96,6 @@ func _on_body_entered(body: Node2D):
 
 func _on_body_exited(body: Node2D):
 	"""玩家离开交互范围"""
-	print("[DEBUG] NPC ", npc_name, " 检测到物体离开: ", body.name)
-
 	if body.is_in_group("player"):
 		print("[INFO] ❌ 玩家离开NPC范围: ", npc_name)
 

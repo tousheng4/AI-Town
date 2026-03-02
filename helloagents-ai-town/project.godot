@@ -19,12 +19,13 @@ config/icon="res://icon.svg"
 
 Config="*res://scripts/config.gd"
 APIClient="*res://scripts/api_client.gd"
+WebsocketClient="*res://scripts/websocket_client.gd"
+MultiplayerManager="*res://scripts/multiplayer_manager.gd"
 
 [display]
 
 window/size/viewport_width=1280
 window/size/viewport_height=720
-window/size/mode=3
 
 [input]
 

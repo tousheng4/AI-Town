@@ -3,6 +3,10 @@
 import os
 import json
 import time
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+load_dotenv()
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from relationship import RelationshipManager
@@ -255,7 +259,7 @@ class NPCAgentManager:
 
             if "cloud.qdrant.io" in qdrant_url:
                 try:
-                    # 使用新版 langchain-qdrant
+                    # 先尝试加载已有集合
                     self.episodic_memories[npc_name] = QdrantVectorStore.from_existing_collection(
                         collection_name=collection_name,
                         embedding=self.embeddings,
@@ -264,8 +268,56 @@ class NPCAgentManager:
                     )
                     print(f"  💾 {npc_name} 情景记忆已加载 (Qdrant Cloud)")
                     return
-                except Exception as e:
-                    print(f"  ⚠️ 连接Qdrant Cloud失败: {e}")
+                except Exception as load_err:
+                    # 集合不存在，创建新集合并设置 player_id 索引
+                    if "Not found" in str(load_err) or "doesn't exist" in str(load_err):
+                        try:
+                            from qdrant_client import QdrantClient
+                            from qdrant_client.http.models import Distance, VectorParams
+
+                            # 创建 Qdrant 客户端
+                            qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+
+                            # 获取向量维度
+                            vector_size = 384
+                            try:
+                                test_embed = self.embeddings.embed_query("test")
+                                vector_size = len(test_embed)
+                            except:
+                                pass
+
+                            # 创建集合
+                            qdrant_client.create_collection(
+                                collection_name=collection_name,
+                                vectors_config=VectorParams(
+                                    size=vector_size,
+                                    distance=Distance.COSINE
+                                )
+                            )
+
+                            # 为 metadata.player_id 添加索引
+                            try:
+                                qdrant_client.create_payload_index(
+                                    collection_name=collection_name,
+                                    field_name="metadata.player_id",
+                                    field_schema={"type": "keyword"}
+                                )
+                                print(f"  💾 {npc_name} 情景记忆集合已创建 (Qdrant Cloud，含metadata.player_id索引)")
+                            except:
+                                print(f"  💾 {npc_name} 情景记忆集合已创建 (Qdrant Cloud)")
+
+                            # 加载新创建的集合
+                            self.episodic_memories[npc_name] = QdrantVectorStore.from_existing_collection(
+                                collection_name=collection_name,
+                                embedding=self.embeddings,
+                                url=qdrant_url,
+                                api_key=qdrant_api_key
+                            )
+                            return
+                        except Exception as create_err:
+                            print(f"  ⚠️ 创建Qdrant集合失败: {create_err}")
+                    else:
+                        print(f"  ⚠️ 连接Qdrant Cloud失败: {load_err}")
 
             # 尝试本地Qdrant
             local_path = os.path.join(self.memory_dir, npc_name)
@@ -327,28 +379,60 @@ class NPCAgentManager:
             relevant_memories = []
             if episodic_memory:
                 try:
-                    # 检查 Qdrant 中的记忆数量
+                    # 按 player_id 过滤，只检索当前玩家的记忆
+                    filter_obj = None
                     try:
-                        if hasattr(episodic_memory, 'client') and hasattr(episodic_memory.client, 'count'):
-                            total_count = episodic_memory.client.count(collection_name=episodic_memory.collection_name)
-                            print(f"  📚 Qdrant中共有 {total_count} 条记忆")
-                    except Exception as e:
-                        pass  # 静默忽略
+                        from qdrant_client import QdrantClient
+                        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 
-                    docs = episodic_memory.similarity_search(
-                        query=message,
-                        k=5
-                    )
+                        # 构建过滤条件
+                        filter_obj = Filter(
+                            must=[FieldCondition(key="player_id", match=MatchValue(value=player_id))]
+                        )
+
+                        # 查询与当前玩家相关的记忆数量
+                        try:
+                            if hasattr(episodic_memory, 'client') and hasattr(episodic_memory.client, 'count'):
+                                player_count = episodic_memory.client.count(
+                                    collection_name=episodic_memory.collection_name,
+                                    filter=filter_obj
+                                )
+                                log_info(f"  📚 Qdrant中与玩家相关的记忆: {player_count} 条")
+                        except Exception as count_err:
+                            if "Index required" not in str(count_err):
+                                raise
+                            # 索引不存在，跳过计数
+
+                        docs = episodic_memory.similarity_search(
+                            query=message,
+                            k=5,
+                            filter=filter_obj
+                        )
+                    except ImportError:
+                        # 如果导入失败，回退到不过滤
+                        docs = episodic_memory.similarity_search(
+                            query=message,
+                            k=5
+                        )
+                    except Exception as filter_err:
+                        # 如果索引不存在，回退到不过滤
+                        if "Index required" in str(filter_err):
+                            log_info("⚠️ player_id索引不存在，回退到检索所有记忆")
+                            docs = episodic_memory.similarity_search(
+                                query=message,
+                                k=5
+                            )
+                        else:
+                            raise
                     for doc in docs:
                         parsed = self._parse_document(doc)
                         relevant_memories.append({
                             "content": parsed["content"],
                             "metadata": parsed["metadata"]
                         })
-                    print(f"  ⏱️ 记忆检索耗时: {time.time()-t0:.2f}秒")
                     log_memory_retrieval(npc_name, len(relevant_memories), relevant_memories)
                 except Exception as e:
-                    print(f"  ⚠️ 记忆检索失败: {e}")
+                    log_info(f"⚠️ 记忆检索失败: {e}")
 
             # 3. 构建增强的提示词
             memory_context = self._build_memory_context(relevant_memories)

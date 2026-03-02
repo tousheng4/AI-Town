@@ -1,6 +1,10 @@
 # 赛博小镇 - 全局配置
 extends Node
 
+# ==================== 玩家配置 ====================
+var player_id: String = "player"  # 当前玩家ID（用于区分多玩家）
+var player_name: String = "Player"  # 当前玩家名字
+
 # ==================== API配置 ====================
 const API_BASE_URL = "http://127.0.0.1:8000"
 const API_CHAT = API_BASE_URL + "/chat"

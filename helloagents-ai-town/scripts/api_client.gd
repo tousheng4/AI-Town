@@ -37,7 +37,8 @@ func send_chat(npc_name: String, message: String) -> void:
 	"""发送对话请求"""
 	var data = {
 		"npc_name": npc_name,
-		"message": message
+		"message": message,
+		"player_id": Config.player_id
 	}
 	
 	var json_string = JSON.stringify(data)
