@@ -1,13 +1,15 @@
 """记忆检索Agent"""
 import time
-from typing import Dict, Any, List, Tuple
 from datetime import datetime
+from typing import Dict, Any
 
-from logger import log_memory_retrieval, log_info as logger_log_info
-from memory import get_history
-from .base import BaseAgent, AgentResult
 from config import settings
+from logger import log_info as logger_log_info
+from memory import get_history
 from memory.garbage_collector import get_garbage_collector
+from memory.mmr import get_mmr_scorer
+from memory.reranker import get_reranker
+from .base import BaseAgent, AgentResult
 
 
 def log_info(msg: str):
@@ -41,7 +43,8 @@ class MemoryAgent(BaseAgent):
 
             if episodic_memory:
                 try:
-                    log_info(f"[Memory] 开始检索情景记忆，collection={getattr(episodic_memory, 'collection_name', 'unknown')}")
+                    log_info(
+                        f"[Memory] 开始检索情景记忆，collection={getattr(episodic_memory, 'collection_name', 'unknown')}")
 
                     # 按 player_id 过滤，只检索当前玩家的记忆
                     filter_obj = None
@@ -57,15 +60,19 @@ class MemoryAgent(BaseAgent):
                     except ImportError as imp_err:
                         log_info(f"[Memory] 导入过滤模块失败: {imp_err}")
 
+                    # ==================== 两阶段检索 ====================
+                    # 第一阶段：召回 k=50
+                    FIRST_STAGE_K = settings.MEMORY_FIRST_STAGE_K
+
                     if filter_obj:
                         try:
                             # 使用 similarity_search_with_score 获取相似度分数
                             results = episodic_memory.similarity_search_with_score(
                                 query=player_message,
-                                k=3,
+                                k=FIRST_STAGE_K,
                                 filter=filter_obj
                             )
-                            log_info(f"[Memory] 使用filter检索到 {len(results)} 条")
+                            log_info(f"[Memory] 第一阶段召回: {len(results)} 条")
                         except Exception as filter_err:
                             err_msg = str(filter_err)
                             log_info(f"[Memory] filter检索失败: {err_msg}")
@@ -74,18 +81,63 @@ class MemoryAgent(BaseAgent):
                                 log_info("⚠️ player_id索引不存在，回退到检索所有记忆")
                                 results = episodic_memory.similarity_search_with_score(
                                     query=player_message,
-                                    k=3
+                                    k=FIRST_STAGE_K
                                 )
-                                log_info(f"[Memory] 无过滤检索到 {len(results)} 条")
+                                log_info(f"[Memory] 第一阶段召回(无过滤): {len(results)} 条")
                             else:
                                 raise
                     else:
                         # 如果没有filter，回退到不过滤
                         results = episodic_memory.similarity_search_with_score(
                             query=player_message,
-                            k=3
+                            k=FIRST_STAGE_K
                         )
-                        log_info(f"[Memory] 无filter检索到 {len(results)} 条")
+                        log_info(f"[Memory] 第一阶段召回(无过滤): {len(results)} 条")
+
+                    # 第二阶段：Reranker重排
+                    if results and settings.MEMORY_USE_RERANKER:
+                        try:
+                            reranker = get_reranker()
+                            reranked_results = reranker.rerank(
+                                player_message,
+                                [doc for doc, _ in results],
+                                top_k=settings.RERANKER_TOP_K
+                            )
+
+                            # 将重排结果转换为 (doc, score) 格式
+                            results = [(r["document"], r["score"]) for r in reranked_results]
+                            log_info(f"[Memory] 第二阶段重排: {len(results)} 条")
+                        except Exception as e:
+                            log_info(f"[Memory] 重排失败，使用原始召回结果: {e}")
+
+                    # ========== MMR 多样性约束 ==========
+                    if results and settings.MEMORY_USE_MMR:
+                        try:
+                            # 打印 MMR 前的记忆
+                            log_info(f"[MMR Debug] ========== MMR 前 ({len(results)} 条) ==========")
+                            for i, (doc, score) in enumerate(results[:10]):
+                                content = getattr(doc, "page_content", str(doc))[:60]
+                                log_info(f"[MMR Debug]   {i + 1}. [{score:.3f}] {content}")
+
+                            mmr_scorer = get_mmr_scorer()
+                            # 将当前结果转换为 candidates 格式
+                            candidates = [{"document": doc, "score": score} for doc, score in results]
+                            mmr_results = mmr_scorer.compute_mmr(
+                                player_message,
+                                candidates,
+                                k=settings.RERANKER_TOP_K
+                            )
+                            # 转换回 (doc, score) 格式
+                            results = [(r["document"], r["score"]) for r in mmr_results]
+
+                            # 打印 MMR 后的记忆
+                            log_info(f"[MMR Debug] ========== MMR 后 ({len(results)} 条) ==========")
+                            for i, (doc, score) in enumerate(results[:8]):
+                                content = getattr(doc, "page_content", str(doc))[:60]
+                                log_info(f"[MMR Debug]   {i + 1}. [{score:.3f}] {content}")
+
+                        except Exception as e:
+                            log_info(f"[Memory] MMR处理失败: {e}")
 
                     # 根据加权分数过滤和排序 (三层记忆系统)
                     SIMILARITY_THRESHOLD = settings.MEMORY_SIMILARITY_THRESHOLD
@@ -113,7 +165,7 @@ class MemoryAgent(BaseAgent):
                         # 获取权重信息用于日志
                         weights = gc.get_retrieval_weights()
                         log_info(f"[Memory] 📊 记忆分数: sim={similarity_score:.3f}, imp={importance:.3f}, "
-                                f"final={final_score:.3f} (α={weights['alpha']}, β={weights['beta']}, γ={weights['gamma']})")
+                                 f"final={final_score:.3f} (α={weights['alpha']}, β={weights['beta']}, γ={weights['gamma']})")
 
                         # 阈值过滤
                         if final_score >= SIMILARITY_THRESHOLD:

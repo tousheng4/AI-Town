@@ -40,6 +40,22 @@ class Settings:
     # 相似度阈值 (0-1)，只保留高于此分数的记忆，低于此值的将被过滤
     MEMORY_SIMILARITY_THRESHOLD: float = float(os.getenv("MEMORY_SIMILARITY_THRESHOLD", "0.5"))
 
+    # ============== 两阶段检索配置 ==============
+    # 第一阶段：Qdrant召回数量
+    MEMORY_FIRST_STAGE_K: int = int(os.getenv("MEMORY_FIRST_STAGE_K", "50"))
+
+    # 是否启用Reranker重排
+    MEMORY_USE_RERANKER: bool = os.getenv("MEMORY_USE_RERANKER", "true").lower() == "true"
+
+    # Reranker模型配置 (使用CPU版本)
+    RERANKER_MODEL_NAME: str = os.getenv("RERANKER_MODEL_NAME", "BAAI/bge-reranker-base")
+    RERANKER_DEVICE: str = os.getenv("RERANKER_DEVICE", "cpu")  # 使用CPU
+    RERANKER_TOP_K: int = int(os.getenv("RERANKER_TOP_K", "8"))
+
+    # MMR 多样性约束配置
+    MEMORY_USE_MMR: bool = os.getenv("MEMORY_USE_MMR", "false").lower() == "true"
+    MEMORY_MMR_LAMBDA: float = float(os.getenv("MEMORY_MMR_LAMBDA", "0.5"))
+
     # ============== 三层记忆系统配置 ==============
 
     # 记忆压缩配置
