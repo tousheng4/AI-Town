@@ -1,8 +1,7 @@
 """NPC Agent系统 - 使用LangChain框架"""
 
 import os
-import json
-import time
+
 from dotenv import load_dotenv
 
 # 加载 .env 文件
@@ -10,14 +9,11 @@ load_dotenv()
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from relationship import RelationshipManager
-from logger import (
-    log_dialogue_start, log_affinity, log_memory_retrieval,
-    log_generating_response, log_npc_response, log_analyzing_affinity,
-    log_affinity_change, log_memory_saved, log_dialogue_end, log_info
-)
 from config import settings
-from memory import get_history, extend_ttl, save_message
+from memory import get_history
 from memory import clear_memory as clear_short_term_memory
+from memory.profile_manager import get_profile_manager
+from memory.garbage_collector import get_garbage_collector
 
 # LangChain 核心导入 - 延迟导入以处理缺失包
 HuggingFaceEmbeddings = None
@@ -32,6 +28,7 @@ SystemMessage = Any
 MessagesPlaceholder = Any
 ChatPromptTemplate = Any
 Document = None
+
 
 # 尝试导入 LangChain 模块
 def _import_langchain():
@@ -61,6 +58,7 @@ def _import_langchain():
         from langchain_huggingface import HuggingFaceEmbeddings
     except ImportError as e:
         print(f"[WARNING] langchain_huggingface import failed: {e}")
+
 
 # 执行延迟导入
 _import_langchain()
@@ -95,6 +93,7 @@ NPC_ROLES = {
         "hobbies": "看设计作品、逛Dribbble、品咖啡"
     }
 }
+
 
 def create_system_prompt(name: str, role: Dict[str, str]) -> str:
     """创建NPC的系统提示词"""
@@ -202,6 +201,16 @@ class NPCAgentManager:
         # 初始化好感度管理器
         if self.llm:
             self.relationship_manager = RelationshipManager(self.llm)
+
+        # Profile事实库管理器
+        self.profile_manager = get_profile_manager()
+
+        # 记忆垃圾回收器（遗忘机制）
+        self.gc = get_garbage_collector()
+
+        # 记忆压缩计数器（持久化在Manager中）
+        self.conversation_counts: Dict[str, Dict[str, int]] = {}  # {npc_name: {player_id: count}}
+
 
         self._create_agents()
 
@@ -343,195 +352,6 @@ class NPCAgentManager:
             print(f"  ⚠️ {npc_name} 情景记忆初始化失败: {e}")
             self.episodic_memories[npc_name] = None
 
-    def chat(self, npc_name: str, message: str, player_id: str = "player") -> str:
-        """与指定NPC对话 (支持记忆功能和好感度系统)"""
-        if npc_name not in self.agents:
-            return f"错误: NPC '{npc_name}' 不存在"
-
-        agent = self.agents[npc_name]
-        episodic_memory = self.episodic_memories.get(npc_name)
-
-        if agent is None:
-            # 模拟模式回复
-            role = NPC_ROLES[npc_name]
-            return f"你好!我是{npc_name},一名{role['title']}。(当前为模拟模式,请配置API_KEY以启用AI对话)"
-
-        try:
-            # 记录对话开始
-            log_dialogue_start(npc_name, message)
-
-            # 1. 获取当前好感度
-            affinity_context = ""
-            if self.relationship_manager:
-                affinity = self.relationship_manager.get_affinity(npc_name, player_id)
-                affinity_level = self.relationship_manager.get_affinity_level(affinity)
-                affinity_modifier = self.relationship_manager.get_affinity_modifier(affinity)
-
-                affinity_context = f"""【当前关系】
-你与玩家的关系: {affinity_level} (好感度: {affinity:.0f}/100)
-【对话风格】{affinity_modifier}
-
-"""
-                log_affinity(npc_name, affinity, affinity_level)
-
-            # 2. 检索相关记忆
-            t0 = time.time()
-            relevant_memories = []
-            if episodic_memory:
-                try:
-                    # 按 player_id 过滤，只检索当前玩家的记忆
-                    filter_obj = None
-                    try:
-                        from qdrant_client import QdrantClient
-                        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
-
-                        # 构建过滤条件
-                        filter_obj = Filter(
-                            must=[FieldCondition(key="player_id", match=MatchValue(value=player_id))]
-                        )
-
-                        # 查询与当前玩家相关的记忆数量
-                        try:
-                            if hasattr(episodic_memory, 'client') and hasattr(episodic_memory.client, 'count'):
-                                player_count = episodic_memory.client.count(
-                                    collection_name=episodic_memory.collection_name,
-                                    filter=filter_obj
-                                )
-                                log_info(f"  📚 Qdrant中与玩家相关的记忆: {player_count} 条")
-                        except Exception as count_err:
-                            if "Index required" not in str(count_err):
-                                raise
-                            # 索引不存在，跳过计数
-
-                        docs = episodic_memory.similarity_search(
-                            query=message,
-                            k=5,
-                            filter=filter_obj
-                        )
-                    except ImportError:
-                        # 如果导入失败，回退到不过滤
-                        docs = episodic_memory.similarity_search(
-                            query=message,
-                            k=5
-                        )
-                    except Exception as filter_err:
-                        # 如果索引不存在，回退到不过滤
-                        if "Index required" in str(filter_err):
-                            log_info("⚠️ player_id索引不存在，回退到检索所有记忆")
-                            docs = episodic_memory.similarity_search(
-                                query=message,
-                                k=5
-                            )
-                        else:
-                            raise
-                    for doc in docs:
-                        parsed = self._parse_document(doc)
-                        relevant_memories.append({
-                            "content": parsed["content"],
-                            "metadata": parsed["metadata"]
-                        })
-                    log_memory_retrieval(npc_name, len(relevant_memories), relevant_memories)
-                except Exception as e:
-                    log_info(f"⚠️ 记忆检索失败: {e}")
-
-            # 3. 构建增强的提示词
-            memory_context = self._build_memory_context(relevant_memories)
-
-            enhanced_message = affinity_context
-            if memory_context:
-                enhanced_message += f"{memory_context}\n\n"
-            enhanced_message += f"【当前对话】\n玩家: {message}"
-
-            # 4. 调用 Agent 生成回复
-            log_generating_response()
-
-            # 准备历史消息
-            history_messages = []
-            memory_history=get_history(npc_name,player_id)
-            for msg in memory_history:
-                if msg["role"]=="human" and HumanMessage:
-                    history_messages.append(HumanMessage(content=msg["content"]))
-                elif msg["role"]=="ai" and AIMessage:
-                    history_messages.append(AIMessage(content=msg["content"]))
-            # 每次获取历史后，延长 TTL（保持活跃）
-            extend_ttl(npc_name,player_id)
-
-            # 调用 LCEL Agent
-            t1 = time.time()
-            response = agent.invoke({
-                "input": enhanced_message,
-                "history": history_messages
-            })
-            print(f"  ⏱️ LLM生成回复耗时: {time.time()-t1:.2f}秒")
-
-            # 提取回复内容
-            if hasattr(response, 'content'):
-                npc_response = response.content
-            else:
-                npc_response = str(response)
-
-            log_npc_response(npc_name, npc_response)
-
-            # 5. 分析并更新好感度
-            log_analyzing_affinity()
-            t2 = time.time()
-            if self.relationship_manager:
-                affinity_result = self.relationship_manager.analyze_and_update_affinity(
-                    npc_name=npc_name,
-                    player_message=message,
-                    npc_response=npc_response,
-                    player_id=player_id
-                )
-                print(f"  ⏱️ 好感度分析耗时: {time.time()-t2:.2f}秒")
-                log_affinity_change(affinity_result)
-            else:
-                affinity_result = {"changed": False, "affinity": 50.0}
-
-            # 6. 保存对话到记忆
-            try:
-                save_message(npc_name,player_id,"human",message)
-                save_message(npc_name,player_id,"ai",npc_response)
-            except Exception as e:
-                print(f"  ⚠️ 保存工作记忆失败: {e}")
-
-            # 保存到情景记忆 (Qdrant)
-            if episodic_memory and Document:
-                try:
-                    player_doc = Document(
-                        page_content=f"玩家说: {message}",
-                        metadata={
-                            "speaker": "player",
-                            "player_id": player_id,
-                            "timestamp": datetime.now().isoformat(),
-                            "type": "player_message"
-                        }
-                    )
-
-                    npc_doc = Document(
-                        page_content=f"{npc_name}说: {npc_response}",
-                        metadata={
-                            "speaker": npc_name,
-                            "player_id": player_id,
-                            "timestamp": datetime.now().isoformat(),
-                            "type": "npc_response"
-                        }
-                    )
-
-                    episodic_memory.add_documents([player_doc, npc_doc])
-                except Exception as e:
-                    print(f"  ⚠️ 保存情景记忆失败: {e}")
-
-            log_memory_saved(npc_name)
-            log_dialogue_end()
-
-            return npc_response
-
-        except Exception as e:
-            print(f"❌ {npc_name}对话失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return f"抱歉,我现在有点忙,等会儿再聊吧。(错误: {str(e)})"
-
     def _parse_document(self, doc) -> Dict:
         """解析文档对象，支持 Document 和 dict 两种格式"""
         if isinstance(doc, dict):
@@ -541,28 +361,6 @@ class NPCAgentManager:
             content = getattr(doc, "page_content", str(doc))
             metadata = getattr(doc, "metadata", {})
         return {"content": content, "metadata": metadata}
-
-    def _build_memory_context(self, memories: List[Dict]) -> str:
-        """构建记忆上下文"""
-        if not memories:
-            return ""
-
-        context_parts = ["【之前的对话记忆】"]
-        for memory in memories:
-            content = memory.get("content", "")
-            timestamp = memory.get("metadata", {}).get("timestamp", "")
-            if timestamp:
-                try:
-                    dt = datetime.fromisoformat(timestamp)
-                    time_str = dt.strftime("%H:%M")
-                except:
-                    time_str = timestamp[:5] if len(timestamp) >= 5 else ""
-            else:
-                time_str = ""
-            context_parts.append(f"[{time_str}] {content}" if time_str else content)
-
-        context_parts.append("")
-        return "\n".join(context_parts)
 
     def get_npc_info(self, npc_name: str) -> Dict[str, str]:
         """获取NPC信息"""
@@ -662,7 +460,7 @@ class NPCAgentManager:
     async def chat_supervisor(self, npc_name: str, message: str, player_id: str = "player") -> str:
         """使用Supervisor模式与NPC对话 (Multi-Agent架构)"""
         # 导入Multi-Agent组件 (从agent_framework包)
-        from agent_framework import AgentFactory, SupervisorAgent, SupervisorConfig
+        from agent_framework import AgentFactory, SupervisorConfig
         # NPC_ROLES在当前模块中定义
         global NPC_ROLES
 
@@ -691,8 +489,10 @@ class NPCAgentManager:
             # 创建Supervisor配置
             config = SupervisorConfig(
                 enable_reflection=True,
-                parallel_memory_affinity=True
+                parallel_memory_affinity=True,
+                conversation_counts=self.conversation_counts  # 共享计数器
             )
+            print(f"[agents.py] 创建SupervisorConfig, conversation_counts id: {id(self.conversation_counts)}")
 
             # 创建Supervisor
             supervisor = factory.create_supervisor(
@@ -704,19 +504,22 @@ class NPCAgentManager:
             )
 
             # 构建上下文
+            profile_context = self.profile_manager.get_profile_context(npc_name, player_id)
             context = {
                 "npc_name": npc_name,
                 "player_id": player_id,
                 "player_message": message,
                 "role_config": role_config,
-                "episodic_memory": self.episodic_memories.get(npc_name)
+                "episodic_memory": self.episodic_memories.get(npc_name),
+                "profile_context": profile_context
             }
 
             # 执行Supervisor
             result = await supervisor.execute(context)
 
             if result.success:
-                return result.data.get("response", "")
+                npc_response = result.data.get("response", "")
+                return npc_response
             else:
                 return f"抱歉,我现在有点忙,等会儿再聊吧。(错误: {result.error})"
 

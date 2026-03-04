@@ -2,8 +2,10 @@
 import asyncio
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Dict, Any, Optional
 
+from config import settings
 from logger import (
     log_npc_response,
     log_dialogue_start,
@@ -34,6 +36,7 @@ class SupervisorConfig:
     enable_reflection: bool = True  # 是否启用反思Agent
     parallel_memory_affinity: bool = True  # 是否并行获取记忆和好感度
     max_retries: int = 1
+    conversation_counts: dict = None  # 记忆压缩计数器共享引用
 
 
 class SupervisorAgent(BaseAgent):
@@ -54,6 +57,11 @@ class SupervisorAgent(BaseAgent):
         self.dialogue_agent = dialogue_agent
         self.reflection_agent = reflection_agent
         self.config = config or SupervisorConfig()
+
+        # 记忆压缩计数器（从config共享）
+        self.conversation_counts = self.config.conversation_counts
+        if self.conversation_counts is None:
+            self.conversation_counts = {}
 
     async def execute(self, context: Dict[str, Any]) -> AgentResult:
         """执行Supervisor任务 - 协调多Agent工作"""
@@ -94,6 +102,7 @@ class SupervisorAgent(BaseAgent):
             log_memory_retrieval(npc_name, len(episodic_memories), episodic_memories)
 
             # 合并上下文
+            profile_context = context.get("profile_context", "")
             context.update({
                 "working_memory": memory_data.get("working_memory", []),
                 "memory_context": memory_data.get("memory_context", ""),
@@ -101,7 +110,8 @@ class SupervisorAgent(BaseAgent):
                 "affinity": affinity_data.get("affinity", 50.0),
                 "level": affinity_data.get("level", "陌生"),
                 "modifier": affinity_data.get("modifier", "礼貌友善"),
-                "affinity_context": affinity_data.get("affinity_context", "")
+                "affinity_context": affinity_data.get("affinity_context", ""),
+                "profile_context": profile_context
             })
 
             # ========== 步骤2: 生成NPC回复 ==========
@@ -154,6 +164,13 @@ class SupervisorAgent(BaseAgent):
                 episodic_memory=context.get("episodic_memory")
             )
             log_memory_saved(npc_name)
+
+            # ========== 步骤6: 触发记忆压缩（三层记忆系统）==========
+            await self._trigger_memory_consolidation(
+                npc_name=npc_name,
+                player_id=player_id,
+                episodic_memory=context.get("episodic_memory")
+            )
 
             execution_time = time.time() - start_time
             log_dialogue_end()
@@ -278,3 +295,116 @@ class SupervisorAgent(BaseAgent):
 
         except Exception as e:
             log_info(f"⚠️ 保存记忆失败: {e}")
+
+    async def _trigger_memory_consolidation(
+            self,
+            npc_name: str,
+            player_id: str,
+            episodic_memory: Any = None
+    ):
+        """触发记忆压缩（三层记忆系统）
+
+        当对话轮数达到阈值时，调用MemoryConsolidationAgent将对话压缩成事件块，
+        并抽取Profile事实。
+
+        Args:
+            npc_name: NPC名称
+            player_id: 玩家ID
+            episodic_memory: 向量数据库实例
+        """
+        from memory import get_history
+        from memory.profile_manager import get_profile_manager
+        from memory.garbage_collector import get_garbage_collector
+        from .memory_consolidation_agent import MemoryConsolidationAgent
+
+        # 初始化计数器
+        log_info(f"[Supervisor] 🔍 计数器对象id: {id(self.conversation_counts)}")
+        log_info(f"[Supervisor] 🔍 当前计数器内容: {self.conversation_counts}")
+
+        if npc_name not in self.conversation_counts:
+            self.conversation_counts[npc_name] = {}
+        if player_id not in self.conversation_counts[npc_name]:
+            self.conversation_counts[npc_name][player_id] = 0
+
+        # 计数器+1
+        self.conversation_counts[npc_name][player_id] += 1
+        count = self.conversation_counts[npc_name][player_id]
+
+        log_info(f"[Supervisor] 📊 对话计数: npc={npc_name}, player={player_id}, count={count}, threshold={settings.MEMORY_CONSOLIDATION_INTERVAL}")
+
+        # 检查是否达到压缩阈值
+        if count < settings.MEMORY_CONSOLIDATION_INTERVAL:
+            return  # 未达到阈值
+
+        log_info(f"[Supervisor] 📦 触发记忆压缩 (第{count}轮)")
+
+        try:
+            # 获取最近N轮对话
+            history = get_history(npc_name, player_id, limit=settings.MEMORY_CONSOLIDATION_INTERVAL * 2)
+
+            if not history:
+                return
+
+            # 创建MemoryConsolidationAgent
+            consolidation_agent = MemoryConsolidationAgent(self.llm)
+
+            # 构建上下文
+            context = {
+                "npc_name": npc_name,
+                "player_id": player_id,
+                "dialogue_history": history,
+                "timestamp_start": history[0].get("timestamp", ""),
+                "timestamp_end": history[-1].get("timestamp", datetime.now().isoformat())
+            }
+
+            # 执行压缩
+            result = await consolidation_agent.execute(context)
+
+            if result.success and result.data:
+                # 保存事件块到Qdrant
+                event_block = result.data.get("event_block")
+                if event_block and episodic_memory:
+                    try:
+                        Document = None
+                        try:
+                            from langchain_core.documents import Document
+                        except ImportError:
+                            pass
+
+                        if Document:
+                            event_doc = Document(
+                                page_content=event_block.get("event_summary", ""),
+                                metadata={
+                                    "speaker": npc_name,
+                                    "player_id": player_id,
+                                    "timestamp": datetime.now().isoformat(),
+                                    "type": "event_block",
+                                    "importance": event_block.get("importance", 0.5),
+                                    "players": event_block.get("players", event_block.get("participants", [])),
+                                    "entities": event_block.get("entities", []),
+                                    "timestamp_range": event_block.get("timestamp_range", ""),
+                                    "raw_turn_ids": event_block.get("raw_turn_ids", [])
+                                }
+                            )
+                            episodic_memory.add_documents([event_doc])
+                            log_info(f"[Supervisor] ✅ 事件块已保存 (importance={event_block.get('importance', 0.5)})")
+                    except Exception as e:
+                        log_info(f"[Supervisor] ⚠️ 保存事件块失败: {e}")
+
+                # 更新Profile
+                profile_facts = result.data.get("profile_facts", [])
+                if profile_facts:
+                    profile_manager = get_profile_manager()
+                    profile_manager.update_from_extraction(npc_name, player_id, profile_facts)
+
+                # 触发遗忘清理（可选，每次压缩后清理）
+                gc = get_garbage_collector()
+                cleanup_result = await gc.cleanup(npc_name, episodic_memory, player_id)
+                if cleanup_result["deleted"] > 0:
+                    log_info(f"[Supervisor] 🗑️ 遗忘清理完成: 删除{cleanup_result['deleted']}条")
+
+            # 重置计数器
+            self.conversation_counts[npc_name][player_id] = 0
+
+        except Exception as e:
+            log_info(f"[Supervisor] ⚠️ 记忆压缩失败: {e}")

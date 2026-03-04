@@ -146,3 +146,73 @@ try:
 
 except Exception as e:
     print(f"   错误: {e}")
+
+# 7. 测试相似度分数
+print("\n7. 测试相似度分数 (similarity_search_with_score):")
+try:
+    from langchain_qdrant import QdrantVectorStore
+    from langchain_huggingface import HuggingFaceEmbeddings
+
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    qdrant = QdrantVectorStore.from_existing_collection(
+        collection_name=collection_name,
+        embedding=embeddings,
+        url=QDRANT_URL,
+        api_key=QDRANT_API_KEY
+    )
+
+    # 测试查询
+    test_queries = [
+        "你好",
+        "今天天气怎么样",
+        "Python代码",
+        "项目进度",
+    ]
+
+    for query in test_queries:
+        print(f"\n   查询: '{query}'")
+        results = qdrant.similarity_search_with_score(query=query, k=5)
+
+        for i, (doc, score) in enumerate(results):
+            player_id = doc.metadata.get("player_id", "unknown")
+            content = doc.page_content[:40]
+            print(f"   {i + 1}. score={score:.4f}, player_id={player_id}, content={content}...")
+
+except Exception as e:
+    print(f"   错误: {e}")
+
+# 7.1 查看集合向量配置
+print("\n7.1 查看集合向量配置:")
+try:
+    info = client.get_collection(collection_name=collection_name)
+    print(f"   向量配置: {info.vectors_config}")
+except Exception as e:
+    print(f"   错误: {e}")
+
+# 8. 测试不同阈值的效果
+print("\n8. 测试不同阈值的效果:")
+try:
+    from langchain_qdrant import QdrantVectorStore
+    from langchain_huggingface import HuggingFaceEmbeddings
+
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    qdrant = QdrantVectorStore.from_existing_collection(
+        collection_name=collection_name,
+        embedding=embeddings,
+        url=QDRANT_URL,
+        api_key=QDRANT_API_KEY
+    )
+
+    query = "你在做什么"
+    results = qdrant.similarity_search_with_score(query=query, k=5)
+
+    thresholds = [0.3, 0.5, 0.7, 0.9]
+    print(f"   查询: '{query}'")
+    print(f"   原始结果数量: {len(results)}")
+
+    for threshold in thresholds:
+        filtered = [doc for doc, score in results if score >= threshold]
+        print(f"   阈值 >= {threshold}: 保留 {len(filtered)} 条")
+
+except Exception as e:
+    print(f"   错误: {e}")

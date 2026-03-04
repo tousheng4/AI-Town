@@ -36,6 +36,36 @@ class Settings:
     # 短期记忆过期时间（秒），默认2小时
     MEMORY_TTL: int = int(os.getenv("MEMORY_TTL", "7200"))
 
+    # 情景记忆配置
+    # 相似度阈值 (0-1)，只保留高于此分数的记忆，低于此值的将被过滤
+    MEMORY_SIMILARITY_THRESHOLD: float = float(os.getenv("MEMORY_SIMILARITY_THRESHOLD", "0.5"))
+
+    # ============== 三层记忆系统配置 ==============
+
+    # 记忆压缩配置
+    # 每N轮对话触发一次记忆压缩（生成事件块）
+    MEMORY_CONSOLIDATION_INTERVAL: int = int(os.getenv("MEMORY_CONSOLIDATION_INTERVAL", "3"))
+
+    # 检索权重配置 (α + β + γ = 1.0)
+    # 最终分数 = α×相似度 + β×重要度 + γ×新近度
+    RETRIEVAL_SIMILARITY_WEIGHT: float = float(os.getenv("RETRIEVAL_SIMILARITY_WEIGHT", "0.4"))
+    RETRIEVAL_IMPORTANCE_WEIGHT: float = float(os.getenv("RETRIEVAL_IMPORTANCE_WEIGHT", "0.3"))
+    RETRIEVAL_RECENCY_WEIGHT: float = float(os.getenv("RETRIEVAL_RECENCY_WEIGHT", "0.3"))
+
+    # 新近度衰减配置
+    # recency = 1 / (1 + days_since * decay_rate)
+    MEMORY_RECENCY_DECAY_RATE: float = float(os.getenv("MEMORY_RECENCY_DECAY_RATE", "0.1"))
+
+    # 遗忘配置
+    # importance < 此值且长期未访问的记忆考虑遗忘
+    MEMORY_FORGET_THRESHOLD: float = float(os.getenv("MEMORY_FORGET_THRESHOLD", "0.2"))
+    # 超过此天数未访问且importance低的记忆将被遗忘
+    MEMORY_FORGET_DAYS: int = int(os.getenv("MEMORY_FORGET_DAYS", "30"))
+
+    # Profile事实库配置
+    # 存储路径
+    PROFILE_DATA_DIR: str = os.path.join(os.path.dirname(__file__), 'profile_data')
+
     @classmethod
     def validate(cls):
         """验证配置"""

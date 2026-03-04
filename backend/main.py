@@ -9,7 +9,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
-import asyncio
 
 from config import settings
 from models import (
@@ -113,14 +112,13 @@ async def health_check():
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat_with_npc(request: ChatRequest, use_supervisor: bool = True):
+async def chat_with_npc(request: ChatRequest):
     """与NPC对话接口
 
-    玩家与指定NPC进行实时对话,使用独立的Agent处理
+    玩家与指定NPC进行实时对话,使用Supervisor Multi-Agent模式
 
     Args:
         request: 对话请求
-        use_supervisor: 是否使用Multi-Agent Supervisor模式 (可选,默认False)
     """
     npc_mgr, _ = get_managers()
 
@@ -133,22 +131,12 @@ async def chat_with_npc(request: ChatRequest, use_supervisor: bool = True):
         )
 
     try:
-        # 根据模式选择使用原始chat或Supervisor模式
-        if use_supervisor:
-            # 使用Multi-Agent Supervisor模式
-            response_text = await npc_mgr.chat_supervisor(
-                request.npc_name,
-                request.message,
-                request.player_id
-            )
-        else:
-            # 使用原始单Agent模式 (在线程池中运行避免阻塞)
-            response_text = await asyncio.to_thread(
-                npc_mgr.chat,
-                request.npc_name,
-                request.message,
-                request.player_id
-            )
+        # 使用Supervisor Multi-Agent模式
+        response_text = await npc_mgr.chat_supervisor(
+            request.npc_name,
+            request.message,
+            request.player_id
+        )
 
         return ChatResponse(
             npc_name=request.npc_name,
@@ -415,6 +403,80 @@ async def set_npc_affinity(npc_name: str, affinity: float, player_id: str = "pla
         raise HTTPException(
             status_code=500,
             detail=f"设置好感度失败: {str(e)}"
+        )
+
+
+@app.post("/npcs/{npc_name}/memory/cleanup")
+async def cleanup_npc_memories(
+        npc_name: str,
+        player_id: str = None,
+        threshold: float = 0.5,
+        days: int = 7
+):
+    """手动触发记忆遗忘清理
+
+    用于测试遗忘机制，可以手动设置阈值和天数来触发清理。
+
+    Args:
+        npc_name: NPC名称
+        player_id: 玩家ID (可选)
+        threshold: 重要度阈值 (0-1)，低于此值的会被遗忘
+        days: 天数，超过此天数的会被遗忘
+
+    Returns:
+        清理结果
+    """
+    npc_mgr, _ = get_managers()
+
+    # 验证NPC是否存在
+    npc_info = npc_mgr.get_npc_info(npc_name)
+    if not npc_info:
+        raise HTTPException(
+            status_code=404,
+            detail=f"NPC '{npc_name}' 不存在"
+        )
+
+    try:
+        # 临时修改阈值和天数用于测试
+        from memory.garbage_collector import get_garbage_collector
+        from config import settings
+
+        # 保存原始值
+        original_threshold = settings.MEMORY_FORGET_THRESHOLD
+        original_days = settings.MEMORY_FORGET_DAYS
+
+        # 临时修改
+        settings.MEMORY_FORGET_THRESHOLD = threshold
+        settings.MEMORY_FORGET_DAYS = days
+
+        gc = get_garbage_collector()
+        # 同时更新gc实例的属性（因为单例已在启动时初始化）
+        gc.forget_threshold = threshold
+        gc.forget_days = days
+
+        episodic_memory = npc_mgr.episodic_memories.get(npc_name)
+
+        # 执行清理
+        result = await gc.cleanup(npc_name, episodic_memory, player_id)
+
+        # 恢复原始值
+        settings.MEMORY_FORGET_THRESHOLD = original_threshold
+        settings.MEMORY_FORGET_DAYS = original_days
+
+        return {
+            "message": "记忆清理完成",
+            "npc_name": npc_name,
+            "player_id": player_id,
+            "threshold": threshold,
+            "days": days,
+            "scanned": result.get("scanned", 0),
+            "deleted": result.get("deleted", 0)
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"记忆清理失败: {str(e)}"
         )
 
 

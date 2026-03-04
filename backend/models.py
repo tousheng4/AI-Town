@@ -69,3 +69,61 @@ class NPCListResponse(BaseModel):
     npcs: List[NPCInfo] = Field(..., description="NPC列表")
     total: int = Field(..., description="NPC总数")
 
+
+# ============== 三层记忆系统数据模型 ==============
+
+class EpisodicMemoryBlock(BaseModel):
+    """情景记忆块 - 事件压缩后的结构化记忆
+
+    这是三层记忆系统中"Episodic"层的核心数据结构。
+    相比逐句存储，事件块能更好地表达对话中的完整事件。
+
+    字段说明：
+    - event_summary: 一句话概括发生了什么（压缩后的核心信息）
+    - participants: 参与对话的人（玩家和NPC）
+    - entities: 涉及的实体（话题、人名、地点、物品等）
+    - importance: 重要度 0-1（由LLM打分，影响检索排序）
+    - timestamp_range: 事件时间范围
+    - raw_turn_ids: 原始对话ID列表（用于追溯）
+    """
+    event_summary: str = Field(..., description="事件摘要，一句话概括")
+    participants: List[str] = Field(default_factory=list, description="参与者列表")
+    entities: List[str] = Field(default_factory=list, description="涉及实体（话题/人物/地点）")
+    importance: float = Field(default=0.5, ge=0.0, le=1.0, description="重要度 0-1")
+    timestamp_range: str = Field(default="", description="时间范围")
+    raw_turn_ids: List[str] = Field(default_factory=list, description="原始对话ID")
+
+
+class ProfileFact(BaseModel):
+    """Profile事实库 - 稳定事实信息
+
+    这是三层记忆系统中"Semantic/Profile"层的核心数据结构。
+    存储从对话中抽取的长期稳定信息。
+
+    字段说明：
+    - category: 事实类别（preferences/taboos/promises/goals/relationship_tags）
+    - content: 事实内容
+    - source_turn_id: 来源对话ID
+    - extracted_at: 抽取时间
+    - confidence: 置信度 0-1
+    """
+    category: str = Field(..., description="事实类别: preferences/taboos/promises/goals/relationship_tags")
+    content: str = Field(..., description="事实内容")
+    source_turn_id: str = Field(default="", description="来源对话ID")
+    extracted_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="抽取时间")
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0, description="置信度 0-1")
+
+
+class MemoryRetrievalResult(BaseModel):
+    """记忆检索结果 - 加权评分
+
+    用于返回检索结果，包含各维度的评分。
+    最终分数 = α×相似度 + β×重要度 + γ×新近度
+    """
+    content: str = Field(..., description="记忆内容")
+    metadata: Dict = Field(default_factory=dict, description="元数据")
+    similarity_score: float = Field(default=0.0, description="向量相似度分数")
+    importance_score: float = Field(default=0.0, description="重要度分数")
+    recency_score: float = Field(default=0.0, description="新近度分数")
+    final_score: float = Field(default=0.0, description="最终加权分数")
+

@@ -48,13 +48,14 @@ def save_message(npc_name: str, player_id: str, role: str, content: str):
     client.set(key, json.dumps(messages, ensure_ascii=False), ex=settings.MEMORY_TTL)
 
 
-def get_history(npc_name: str, player_id: str) -> List[Dict[str, str]]:
+def get_history(npc_name: str, player_id: str, limit: int = 0) -> List[Dict[str, str]]:
     """
     获取 NPC 的对话历史
 
     Args:
         npc_name: NPC名称
         player_id: 玩家ID
+        limit: 返回最近N条记录，0表示返回全部
 
     Returns:
         [{"role": "human", "content": "..."}, {"role": "ai", "content": "..."}, ...]
@@ -64,7 +65,10 @@ def get_history(npc_name: str, player_id: str) -> List[Dict[str, str]]:
 
     memory_data = client.get(key)
     if memory_data:
-        return json.loads(memory_data)
+        history = json.loads(memory_data)
+        if limit > 0:
+            return history[-limit:]
+        return history
     return []
 
 

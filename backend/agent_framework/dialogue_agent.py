@@ -73,14 +73,17 @@ class DialogueAgent(BaseAgent):
             # 从上下文获取增强信息
             affinity_context = context.get("affinity_context", "")
             memory_context = context.get("memory_context", "")
+            profile_context = context.get("profile_context", "")
             player_message = context.get("player_message", "")
             working_memory = context.get("working_memory", [])
 
             # 构建增强的输入
-            # 注意：affinity_context 和 memory_context 是背景信息，不要在回复中提及
+            # 注意：affinity_context、memory_context 和 profile_context 是背景信息，不要在回复中提及
             enhanced_input = ""
             if affinity_context:
                 enhanced_input += affinity_context + "\n"
+            if profile_context:
+                enhanced_input += profile_context + "\n"
             if memory_context:
                 enhanced_input += memory_context + "\n"
             enhanced_input += f"【当前对话】\n玩家: {player_message}\n\n请直接回复，不要提及好感度、关系等级等背景信息。"
