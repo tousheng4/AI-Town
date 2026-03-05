@@ -18,6 +18,7 @@ class MMRScorer:
     def __init__(self):
         self.use_mmr = settings.MEMORY_USE_MMR
         self.lambda_param = settings.MEMORY_MMR_LAMBDA
+        self.default_k = settings.MEMORY_MMR_TOP_K  # 使用配置默认值
         self.embeddings = None
 
     def _load_embeddings(self):
@@ -39,7 +40,7 @@ class MMRScorer:
             self,
             query: str,
             candidates: List[Dict[str, Any]],
-            k: int = 8
+            k: int = None
     ) -> List[Dict[str, Any]]:
         """MMR 重排序
 
@@ -51,11 +52,15 @@ class MMRScorer:
         Returns:
             去冗余后的文档列表
         """
+        # 使用配置的默认值
+        if k is None:
+            k = self.default_k
+
         log_info(f"[MMR] 收到请求: use_mmr={self.use_mmr}, candidates={len(candidates)}, k={k}, λ={self.lambda_param}")
 
         if not candidates or not self.use_mmr:
             log_info(f"[MMR] 跳过: use_mmr={self.use_mmr}, candidates={len(candidates)}")
-            return candidates[:k]
+            return candidates[:k] if k else candidates
 
         if k >= len(candidates):
             log_info(f"[MMR] k({k}) >= len(candidates)({len(candidates)}), 仍需MMR去重")

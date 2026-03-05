@@ -94,6 +94,62 @@ class MemoryAgent(BaseAgent):
                         )
                         log_info(f"[Memory] 第一阶段召回(无过滤): {len(results)} 条")
 
+                    # ==================== BM25 召回 ====================
+                    bm25_results = []
+                    if settings.MEMORY_USE_BM25:
+                        try:
+                            from memory.bm25_retriever import get_bm25_retriever
+                            bm25 = get_bm25_retriever()
+                            bm25_results = bm25.search(
+                                npc_name=npc_name,
+                                player_id=player_id,
+                                query=player_message,
+                                top_k=settings.MEMORY_BM25_TOP_K
+                            )
+                            if bm25_results:
+                                log_info(f"[BM25] 召回 {len(bm25_results)} 条")
+                        except Exception as e:
+                            log_info(f"[BM25] 召回失败: {e}")
+
+                    # ==================== RRF 融合 ====================
+                    if bm25_results:
+                        # 简单融合：BM25 结果与向量结果合并，按分数排序
+                        # 构建一个简单的融合列表
+                        fused_map = {}
+
+                        # 添加向量检索结果
+                        for doc, score in results:
+                            content = getattr(doc, "page_content", str(doc))
+                            # 归一化向量分数到 0-1
+                            norm_score = (score + 1) / 2  # 假设分数范围 -1 到 1
+                            if content not in fused_map:
+                                fused_map[content] = {"document": doc, "score": norm_score}
+                            else:
+                                fused_map[content]["score"] = max(fused_map[content]["score"], norm_score)
+
+                        # 添加 BM25 结果
+                        for item in bm25_results:
+                            content = item["document"]
+                            if isinstance(content, str):
+                                # 查找对应的 document 对象
+                                matched_doc = None
+                                for doc, _ in results:
+                                    if getattr(doc, "page_content", str(doc)) == content:
+                                        matched_doc = doc
+                                        break
+
+                                if matched_doc:
+                                    if content not in fused_map:
+                                        fused_map[content] = {"document": matched_doc, "score": item["score"]}
+                                    else:
+                                        fused_map[content]["score"] = max(fused_map[content]["score"], item["score"])
+
+                        # 转换为结果列表
+                        fused_results = list(fused_map.values())
+                        fused_results.sort(key=lambda x: x["score"], reverse=True)
+                        results = [(item["document"], item["score"]) for item in fused_results[:settings.MEMORY_RRF_TOP_K]]
+                        log_info(f"[RRF] 融合后保留 {len(results)} 条")
+
                     # 第二阶段：Reranker重排
                     if results and settings.MEMORY_USE_RERANKER:
                         try:

@@ -26,9 +26,13 @@
 - 支持 Supervisor 模式调度多个专业 Agent
 
 ### 记忆系统
-- **短期记忆**：Redis 存储最近 10 条对话，2 小时过期
-- **长期记忆**：Qdrant 向量数据库，支持语义检索
-- 多玩家独立记忆（按 player_id 区分）
+- **三层记忆架构**（受 Generative Agents 论文启发）：
+  - **Working Memory（工作记忆）**：Redis 存储最近对话，2小时过期
+  - **Episodic Memory（情景记忆）**：Qdrant 向量数据库，支持语义检索
+  - **Profile Memory（档案记忆）**：JSON 文件，存储玩家偏好、禁忌、承诺等
+- **多路召回**：Qdrant 向量检索 + BM25 词频检索 → RRF 融合 → BGE Reranker 重排 → MMR 多样性约束
+- **记忆压缩**：每N轮对话自动整合为事件块
+- **遗忘机制**：自动清理低重要度、长期未访问的记忆
 
 ### 好感度系统
 - 好感度范围 0-100，分为 5 个等级
@@ -50,10 +54,17 @@ Helloagents-AI-Town/
 │   │   ├── dialogue_agent.py   # 对话 Agent
 │   │   ├── memory_agent.py     # 记忆 Agent
 │   │   ├── affinity_agent.py   # 好感度 Agent
-│   │   └── reflection_agent.py # 反思 Agent
+│   │   ├── reflection_agent.py # 反思 Agent
+│   │   ├── memory_consolidation_agent.py  # 记忆压缩 Agent
+│   │   └── profile_extraction_agent.py   # 档案抽取 Agent
 │   ├── memory/                 # 记忆系统
-│   │   ├── short_term.py      # 短期记忆 (Redis)
-│   │   └── redis_client.py     # Redis 客户端
+│   │   ├── short_term.py       # 短期记忆 (Redis)
+│   │   ├── redis_client.py     # Redis 客户端
+│   │   ├── profile_manager.py  # 档案记忆管理
+│   │   ├── garbage_collector.py # 遗忘机制
+│   │   ├── reranker.py         # BGE 重排
+│   │   ├── mmr.py              # MMR 多样性约束
+│   │   └── bm25_retriever.py   # BM25 检索 (SQLite FTS5)
 │   ├── relationship/           # 好感度系统
 │   │   └── manager.py         # 好感度管理
 │   ├── tests/                  # 测试工具
@@ -155,6 +166,77 @@ python main.py
 | `/npcs/status` | GET | 获取 NPC 状态 |
 | `/npcs/{name}/memories` | GET | 获取 NPC 记忆 |
 | `/npcs/{name}/affinity` | GET | 获取好感度 |
+| `/npcs/{name}/memory/cleanup` | POST | 手动触发记忆遗忘清理 |
+
+## 记忆系统配置
+
+在 `.env` 文件中配置：
+
+```env
+# ================================
+# 多路召回配置
+# ================================
+MEMORY_FIRST_STAGE_K=40        # Qdrant 向量检索召回数量
+MEMORY_USE_BM25=true          # 是否启用 BM25 检索
+MEMORY_BM25_TOP_K=30          # BM25 召回数量
+MEMORY_RRF_TOP_K=40           # RRF 融合后保留数量
+
+# ================================
+# 两阶段检索配置
+# ================================
+MEMORY_USE_RERANKER=true       # 是否启用重排
+RERANKER_MODEL_NAME=BAAI/bge-reranker-base
+RERANKER_DEVICE=cpu
+RERANKER_TOP_K=30              # Reranker 重排后取 top-k
+
+# MMR 多样性约束
+MEMORY_USE_MMR=true            # 是否启用 MMR
+MEMORY_MMR_LAMBDA=0.5          # 权衡因子 (0-1)
+MEMORY_MMR_TOP_K=8             # MMR 最终返回数量
+
+# ================================
+# 三层记忆系统配置
+# ================================
+MEMORY_CONSOLIDATION_INTERVAL=3  # 每N轮触发记忆压缩
+RETRIEVAL_SIMILARITY_WEIGHT=0.4  # 相似度权重 α
+RETRIEVAL_IMPORTANCE_WEIGHT=0.3  # 重要度权重 β
+RETRIEVAL_RECENCY_WEIGHT=0.3     # 新近度权重 γ
+
+# 遗忘机制
+MEMORY_FORGET_THRESHOLD=0.2       # 遗忘重要度阈值
+MEMORY_FORGET_DAYS=30            # 遗忘天数阈值
+```
+
+### 配置说明
+
+| 配置项 | 说明 | 推荐值 |
+|--------|------|--------|
+| `MEMORY_FIRST_STAGE_K` | Qdrant 向量检索召回数量 | 30-50 |
+| `MEMORY_USE_BM25` | 是否启用 BM25 词频检索 | true |
+| `MEMORY_BM25_TOP_K` | BM25 召回数量 | 20-30 |
+| `MEMORY_RRF_TOP_K` | RRF 融合后保留数量 | 30-50 |
+| `RERANKER_TOP_K` | Reranker 重排后保留数量 | 15-30 |
+| `MEMORY_MMR_LAMBDA` | 0.5=平衡, 0.8=重相关, 0.2=重多样 | 0.5 |
+| `MEMORY_MMR_TOP_K` | MMR 最终返回数量 | 3-8 |
+| `MEMORY_CONSOLIDATION_INTERVAL` | 触发压缩的对轮数 | 3-5 |
+
+### 检索流程
+
+```
+玩家消息
+    ↓
+向量检索 (Qdrant) → 40 条
+    ↓
+BM25 检索 (SQLite FTS5) → 30 条
+    ↓
+RRF 融合 → 40 条
+    ↓
+Reranker 重排 → 30 条
+    ↓
+MMR 多样性约束 → 8 条
+    ↓
+注入上下文
+```
 
 ## 多人游戏
 
@@ -183,6 +265,61 @@ python main.py
                                     生成回复
                                           ↓
                                   HTTP响应 → Godot前端 → 显示对话
+```
+
+### 记忆检索流程
+
+```
+玩家消息
+    ↓
+┌─────────────────────────────────────────┐
+│  多路召回                                │
+│  - Qdrant 向量检索 → 40 条              │
+│  - BM25 词频检索 → 30 条                │
+└─────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────┐
+│  RRF 融合 → 40 条                        │
+└─────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────┐
+│  BGE Reranker 重排 → 30 条              │
+└─────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────┐
+│  MMR 多样性约束 → 8 条                   │
+└─────────────────────────────────────────┘
+    ↓
+加权分数过滤（importance + recency）
+    ↓
+注入上下文
+```
+
+### 记忆压缩流程
+
+```
+对话进行中...
+    ↓
+每3轮对话触发一次压缩（可配置）
+    ↓
+MemoryConsolidationAgent:
+  1. 提取对话中的关键事件
+  2. 识别参与者、实体
+  3. 评估重要性
+    ↓
+生成 EventBlock:
+  - event_summary: 事件摘要
+  - participants: 参与者列表
+  - entities: 实体列表
+  - importance: 重要度 (0-1)
+  - timestamp_range: 时间范围
+    ↓
+同时提取 Profile 信息:
+  - 玩家偏好 (preferences)
+  - 禁忌 (taboos)
+  - 承诺 (promises)
+  - 目标 (goals)
+  - 关系标签 (relationship_tags)
 ```
 
 ## 日志

@@ -55,6 +55,15 @@ class Settings:
     # MMR 多样性约束配置
     MEMORY_USE_MMR: bool = os.getenv("MEMORY_USE_MMR", "false").lower() == "true"
     MEMORY_MMR_LAMBDA: float = float(os.getenv("MEMORY_MMR_LAMBDA", "0.5"))
+    MEMORY_MMR_TOP_K: int = int(os.getenv("MEMORY_MMR_TOP_K", "8"))
+
+    # BM25 配置 (SQLite FTS5 + jieba)
+    MEMORY_USE_BM25: bool = os.getenv("MEMORY_USE_BM25", "false").lower() == "true"
+    MEMORY_BM25_TOP_K: int = int(os.getenv("MEMORY_BM25_TOP_K", "20"))
+    MEMORY_BM25_DB_PATH: str = os.getenv("MEMORY_BM25_DB_PATH", "memory/bm25_index.db")
+
+    # RRF 融合配置
+    MEMORY_RRF_TOP_K: int = int(os.getenv("MEMORY_RRF_TOP_K", "40"))
 
     # ============== 三层记忆系统配置 ==============
 

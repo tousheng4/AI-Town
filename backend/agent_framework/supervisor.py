@@ -290,6 +290,16 @@ class SupervisorAgent(BaseAgent):
                         log_info(f"[SaveMemory] 保存2条文档到 {getattr(episodic_memory, 'collection_name', 'unknown')}")
                         episodic_memory.add_documents([player_doc, npc_doc])
                         log_info(f"[SaveMemory] 保存完成")
+
+                        # 保存到 BM25 索引
+                        if settings.MEMORY_USE_BM25:
+                            try:
+                                from memory.bm25_retriever import get_bm25_retriever
+                                bm25 = get_bm25_retriever()
+                                bm25.add_documents(npc_name, player_id, [player_doc, npc_doc])
+                                log_info(f"[BM25] 文档已添加到索引")
+                            except Exception as e:
+                                log_info(f"[BM25] 添加索引失败: {e}")
                 except Exception as e:
                     log_info(f"⚠️ 保存情景记忆失败: {e}")
 
